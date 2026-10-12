@@ -7,7 +7,7 @@
 # every client after its own, so they override them:
 #
 #   bash script/benchmark.sh
-#   BENCH_CONNS=1000 BENCH_FRAMEWORKS=arpc,fib_arpc bash script/benchmark.sh -b=4096
+#   BENCH_CONNS=1000 BENCH_FRAMEWORKS=arpc,arpc_fib bash script/benchmark.sh -b=4096
 
 . ./script/env.sh || { return 1 2>/dev/null || exit 1; }
 
@@ -84,6 +84,8 @@ for conns in "${bench_conns[@]}"; do
             -sleep="${BENCH_SLEEP}" \
             -timeout="${BENCH_TIMEOUT}" \
             -spid="${server_pid}" \
+            -servercpus="${server_cpu_list}" \
+            -clientcpus="${client_cpu_list}" \
             -out="./output/report/${name}.json" \
             "$@" 2>&1 | tee "./output/log/${name}.client.log" | grep -v '^{'
         if [ "${PIPESTATUS[0]}" -ne 0 ]; then
@@ -94,11 +96,11 @@ for conns in "${bench_conns[@]}"; do
     done
 done
 
-# The report covers whatever the clients wrote, failed runs included.
+# The report covers whatever the clients wrote, failed runs included. It ends
+# with a rule of its own.
 if ls ./output/report/*.json >/dev/null 2>&1; then
     . ./script/report.sh
 fi
-echo "$line"
 
 if [ "${#failed[@]}" -gt 0 ]; then
     echo "failed: ${failed[*]}; see output/log" >&2

@@ -46,7 +46,7 @@ func (c *fibGrpcClient) Close() error {
 
 func main() {
 	grpc.RegisterCodec(pbcodec.Codec{})
-	runner.Main("fib_grpc", func(opts runner.Options) (runner.Client, error) {
+	runner.Main("grpc_fib", func(opts runner.Options) (runner.Client, error) {
 		engine, err := fib.NewEngine(fib.DefaultConfig(), nil)
 		if err != nil {
 			return nil, err

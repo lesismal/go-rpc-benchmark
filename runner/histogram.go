@@ -45,6 +45,7 @@ type shard struct {
 	total  atomic.Uint64
 	failed atomic.Uint64
 	sum    atomic.Uint64
+	min    atomic.Uint64 // 0 until the first call, then the fastest plus one
 	max    atomic.Uint64
 	_      [64]byte
 }
@@ -64,6 +65,12 @@ func (s *shard) record(cost time.Duration, failed bool) {
 			break
 		}
 	}
+	for {
+		m := s.min.Load()
+		if (m != 0 && v+1 >= m) || s.min.CompareAndSwap(m, v+1) {
+			break
+		}
+	}
 }
 
 type histogram struct {
@@ -78,28 +85,36 @@ func (h *histogram) shard(worker int) *shard {
 	return &h.shards[worker%len(h.shards)]
 }
 
-// Latency is the distribution of the successful calls' round trips.
+// Latency is the distribution of the successful calls' round trips, in
+// nanoseconds: the fastest, the mean, the slowest, and the time under which
+// 50%, 75%, 90%, 95%, 99% and 99.9% of them came back.
 type Latency struct {
-	Avg  time.Duration
-	P50  time.Duration
-	P90  time.Duration
-	P99  time.Duration
-	P999 time.Duration
-	Max  time.Duration
+	Min   time.Duration
+	Avg   time.Duration
+	Max   time.Duration
+	TP50  time.Duration
+	TP75  time.Duration
+	TP90  time.Duration
+	TP95  time.Duration
+	TP99  time.Duration
+	TP999 time.Duration
 }
 
 // summary returns the calls made, the calls that failed and the latency of
 // the rest.
 func (h *histogram) summary() (total, failed uint64, lat Latency) {
 	var counts [numBuckets]uint64
-	var sum, max uint64
+	var sum, slowest, fastest uint64
 	for i := range h.shards {
 		s := &h.shards[i]
 		total += s.total.Load()
 		failed += s.failed.Load()
 		sum += s.sum.Load()
-		if m := s.max.Load(); m > max {
-			max = m
+		if m := s.max.Load(); m > slowest {
+			slowest = m
+		}
+		if m := s.min.Load(); m != 0 && (fastest == 0 || m < fastest) {
+			fastest = m
 		}
 		for b := range counts {
 			counts[b] += s.counts[b].Load()
@@ -109,12 +124,16 @@ func (h *histogram) summary() (total, failed uint64, lat Latency) {
 	if ok == 0 {
 		return total, failed, lat
 	}
+	lat.Min = time.Duration(fastest - 1)
 	lat.Avg = time.Duration(sum / ok)
-	lat.Max = time.Duration(max)
+	lat.Max = time.Duration(slowest)
 	quantiles := []struct {
 		q   float64
 		dst *time.Duration
-	}{{0.50, &lat.P50}, {0.90, &lat.P90}, {0.99, &lat.P99}, {0.999, &lat.P999}}
+	}{
+		{0.50, &lat.TP50}, {0.75, &lat.TP75}, {0.90, &lat.TP90},
+		{0.95, &lat.TP95}, {0.99, &lat.TP99}, {0.999, &lat.TP999},
+	}
 	var seen uint64
 	next := 0
 	for b, c := range counts {
@@ -124,9 +143,7 @@ func (h *histogram) summary() (total, failed uint64, lat Latency) {
 		seen += c
 		for next < len(quantiles) && float64(seen) >= quantiles[next].q*float64(ok) {
 			v := time.Duration(bucketValue(b))
-			if v > lat.Max {
-				v = lat.Max
-			}
+			v = max(min(v, lat.Max), lat.Min)
 			*quantiles[next].dst = v
 			next++
 		}

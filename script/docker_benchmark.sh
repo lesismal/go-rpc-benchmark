@@ -34,11 +34,13 @@ Environment overrides (see script/config.sh for the BENCH_* ones):
   BENCH_CONNS              Connection counts (default: 10,100,1000,5000,10000)
   BENCH_CONCURRENCY        Goroutines calling at once (0: the client's default)
   BENCH_PAYLOAD            Payload bytes (default: 1024)
-  BENCH_DURATION           Measured time (default: 30s)
+  BENCH_DURATION           Measured time (default: 10s)
   BENCH_WARMUP             Warm-up time (default: 5s)
   BENCH_SLEEP              Milliseconds the server holds every call (default: 0)
   BENCH_TIMEOUT            Timeout of every call and dial (default: 5s)
-  BENCH_PROJECT            The report's heading
+  BENCH_PROJECT            The report Summary's Project row
+  BENCH_REPORT_SORT        Report row order: result (default, best first) or
+                           framework
   DOCKER_BENCH_CPUS        Integer CPU count (default: about 75% available);
                            -cput overrides it
   DOCKER_BENCH_SERVER_CPUS The servers' CPU count; -cpus overrides it
@@ -236,7 +238,8 @@ run_args=(
     --env "BENCH_CLIENT_CPU_LIST=$client_cpu_list"
 )
 for v in BENCH_FRAMEWORKS BENCH_CONNS BENCH_CONCURRENCY BENCH_PAYLOAD BENCH_DURATION BENCH_WARMUP \
-    BENCH_SLEEP BENCH_TIMEOUT BENCH_SLEEP_BETWEEN BENCH_SERVER_START_TIMEOUT BENCH_PROJECT; do
+    BENCH_SLEEP BENCH_TIMEOUT BENCH_SLEEP_BETWEEN BENCH_SERVER_START_TIMEOUT BENCH_PROJECT \
+    BENCH_REPORT_SORT; do
     if [ -n "${!v+set}" ]; then
         run_args+=(--env "$v=${!v}")
     fi

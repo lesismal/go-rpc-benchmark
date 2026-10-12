@@ -24,6 +24,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -67,29 +68,66 @@ type NewClient func(opts Options) (Client, error)
 
 // Result is the report of one run, which script/report.sh reads back.
 type Result struct {
-	Framework   string
+	Framework string
+
+	// The load: Conns connections, Concurrency goroutines calling at once,
+	// Payload bytes a call, SleepMs the server holds every call for, Warmup
+	// seconds before the Used seconds measured, and Timeout seconds a call.
 	Conns       int
 	Concurrency int
 	Payload     int
 	SleepMs     int
-	Duration    float64 // seconds measured
-	GOMAXPROCS  int
+	Warmup      float64
+	Used        float64
+	Timeout     float64
+	// Where it ran: the CPUs the server and the client were pinned to
+	// (-servercpus and -clientcpus, as the scripts pinned them), and the
+	// client's GOMAXPROCS.
+	ServerCPUs string
+	ClientCPUs string
+	GOMAXPROCS int
 
 	ConnectTime float64 // seconds to open the connections and call over each
 	ConnFailed  int     // connections that could not be opened or called over
-
-	Total  uint64
-	Failed uint64
-	TPS    float64
-	Latency
-
-	Server Usage
-	Client Usage
 	// ServerConns is the established connections the server held during the
 	// run, as the operating system counts them; -1 when it could not be read.
 	ServerConns int
 
+	Total   uint64
+	Success uint64
+	Failed  uint64
+	// TPS is the successful calls a second.
+	TPS float64
+	// CPUEER is TPS for each percent of a CPU the server spent on average,
+	// and MEMEER TPS for each MB of memory it held on average; see EER.
+	CPUEER float64
+	MEMEER float64
+	Latency
+
+	Server Usage
+	Client Usage
+
 	Errors []string `json:",omitempty"`
+}
+
+// EER is go-websocket-benchmark's energy efficiency ratio: the throughput a
+// server got for each unit of what it spent, or 0 when it spent nothing that
+// was measured. CPU EER is TPS over the server's CPUAvg in percent of a CPU,
+// MEM EER TPS over its MEMAvg in MB (1024*1024 bytes).
+func EER(throughput, spent float64) float64 {
+	if spent <= 0 || math.IsNaN(spent) || math.IsInf(throughput, 0) || math.IsNaN(throughput) {
+		return 0
+	}
+	eer := throughput / spent
+	if math.IsInf(eer, 0) || math.IsNaN(eer) {
+		return 0
+	}
+	return eer
+}
+
+// MEMEER is EER over memory in MB.
+func MEMEER(throughput float64, memAvg uint64) float64 {
+	return EER(throughput, float64(memAvg)/(1024*1024))
 }
 
 // errorLog keeps the first few distinct errors of a run for the report.
@@ -125,12 +163,14 @@ func Main(name string, newClient NewClient) {
 		conns        = flag.Int("conns", 100, "connections to open")
 		concurrency  = flag.Int("c", 0, "goroutines calling at once (0: the larger of -conns and 100)")
 		payload      = flag.Int("b", 1024, "payload size in bytes")
-		duration     = flag.Duration("d", 30*time.Second, "measured duration")
+		duration     = flag.Duration("d", 10*time.Second, "measured duration")
 		warmup       = flag.Duration("warmup", 5*time.Second, "warm-up duration, not measured")
 		timeout      = flag.Duration("timeout", 5*time.Second, "timeout of every call and dial")
 		sleepMs      = flag.Int("sleep", 0, "milliseconds the server holds every call (0: echo at once)")
 		dialParallel = flag.Int("dialc", 256, "connections dialing at once")
 		serverPid    = flag.Int("spid", 0, "server process to measure CPU and memory of (0: none)")
+		serverCPUs   = flag.String("servercpus", "", "the CPUs the server is pinned to, for the report only")
+		clientCPUs   = flag.String("clientcpus", "", "the CPUs this client is pinned to, for the report only")
 	)
 	flag.StringVar(&reportFile, "out", "", "file to write the JSON report to (empty: stdout only)")
 	flag.Parse()
@@ -155,6 +195,10 @@ func Main(name string, newClient NewClient) {
 		Concurrency: c,
 		Payload:     *payload,
 		SleepMs:     *sleepMs,
+		Warmup:      warmup.Seconds(),
+		Timeout:     timeout.Seconds(),
+		ServerCPUs:  *serverCPUs,
+		ClientCPUs:  *clientCPUs,
 		GOMAXPROCS:  runtime.GOMAXPROCS(0),
 		ServerConns: -1,
 	}
@@ -211,15 +255,15 @@ func Main(name string, newClient NewClient) {
 	}
 	client.Close()
 
-	res.Duration = elapsed.Seconds()
+	res.Used = elapsed.Seconds()
 	res.Total, res.Failed, res.Latency = hist.summary()
-	if res.Duration > 0 {
-		res.TPS = float64(res.Total-res.Failed) / res.Duration
+	res.Success = res.Total - res.Failed
+	if res.Used > 0 {
+		res.TPS = float64(res.Success) / res.Used
 	}
+	res.CPUEER = EER(res.TPS, res.Server.CPUAvg)
+	res.MEMEER = MEMEER(res.TPS, res.Server.MEMAvg)
 	res.Errors = errs.list
-	logf("%s: TPS %.0f, avg %v, p50 %v, p99 %v, p999 %v, max %v, failed %d/%d, server CPU %.0f%% RSS %.1fMB, server conns %d",
-		name, res.TPS, res.Avg, res.P50, res.P99, res.P999, res.Max, res.Failed, res.Total,
-		res.Server.CPU, float64(res.Server.RSSMax)/(1<<20), res.ServerConns)
 	if res.Failed > 0 {
 		finish(res, fmt.Errorf("%d of %d calls failed", res.Failed, res.Total))
 	}
@@ -293,6 +337,9 @@ func Parallel(n, limit int, f func(i int) error) error {
 // finish writes the report and exits: 1 when err says the run failed, whose
 // report is still written so that the report step shows it.
 func finish(res *Result, err error) {
+	// The run as go-websocket-benchmark prints one, to the console: stdout
+	// carries the JSON, which the scripts keep out of the console.
+	fmt.Fprint(os.Stderr, ShortLine+res.String())
 	data, jerr := json.Marshal(res)
 	if jerr != nil {
 		fatalf("encode report: %v", jerr)

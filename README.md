@@ -6,9 +6,9 @@ Benchmarks of Go RPC frameworks, all of them encoding protobuf, at 10, 100,
 | Name | Framework | Protocol |
 | --- | --- | --- |
 | `arpc` | [github.com/lesismal/arpc](https://github.com/lesismal/arpc) | arpc |
-| `fib_arpc` | [github.com/lesismal/fib/arpc](https://github.com/lesismal/fib/tree/main/arpc) | arpc, on fib's engine |
-| `fib_grpc` | [github.com/lesismal/fib/grpc](https://github.com/lesismal/fib/tree/main/grpc) | gRPC, on fib's engine and HTTP/2 transport |
+| `arpc_fib` | [github.com/lesismal/fib/arpc](https://github.com/lesismal/fib/tree/main/arpc) | arpc, on fib's engine |
 | `grpc` | [google.golang.org/grpc](https://github.com/grpc/grpc-go) | gRPC |
+| `grpc_fib` | [github.com/lesismal/fib/grpc](https://github.com/lesismal/fib/tree/main/grpc) | gRPC, on fib's engine and HTTP/2 transport |
 | `kitex` | [github.com/cloudwego/kitex](https://github.com/cloudwego/kitex) | Kitex Protobuf, pooled long connections |
 | `kitex_mux` | [github.com/cloudwego/kitex](https://github.com/cloudwego/kitex) | Kitex Protobuf over TTHeader, mux transport |
 | `rpcx` | [github.com/smallnest/rpcx](https://github.com/smallnest/rpcx) | rpcx |
@@ -26,7 +26,7 @@ client, [runner](runner/runner.go), does the rest the same way for all of them:
    over each, so a framework that dials lazily has dialed all of them before
    anything is timed.
 2. **Warm up** for `-warmup` (5s), not measured.
-3. **Measure** for `-d` (30s): `-c` goroutines call in a loop, one call at a
+3. **Measure** for `-d` (10s): `-c` goroutines call in a loop, one call at a
    time each, goroutine `i` over connection `i % conns`. `-c` defaults to the
    larger of `-conns` and 100: 10 calls in flight on each of 10 connections,
    and one in flight on each connection from 100 up.
@@ -35,18 +35,40 @@ Every call echoes a `-b` byte payload (1024) with a `-timeout` (5s), and a
 call that errs, times out or comes back with a different payload counts as
 failed. A run with a failed call or connection exits non-zero.
 
-The report has, for every framework at every connection count:
+The client samples the server's CPU and memory (RSS) every second while it
+measures, and writes a JSON report; `report` turns a run's reports into
+Markdown in [go-websocket-benchmark](https://github.com/lesismal/go-websocket-benchmark)'s
+format:
 
-- **TPS**: successful calls per second, and its share of the best.
-- **Latency**: average, P50, P90, P99, P999 and max round trip, from a
-  log-linear histogram accurate to about 1.6%.
-- **Server CPU** and **Client CPU**: CPU time over wall time while measuring,
-  in percent of one CPU, and **TPS/CPU**, the calls the server answered per
-  CPU-second.
-- **Server RSS**: the largest resident set of the server while measuring.
-- **Server Conns**: the established connections the server held, as the
-  operating system counts them, which shows that the client really opened
-  `-conns` of them.
+- **Summary**: what the run measured, one parameter a row.
+- **TPS**: every framework's TPS at each connection count, when the run
+  covered more than one.
+- **Echo: N Conns**, one table per connection count, with:
+  - **TPS [↓1]**: successful calls per second.
+  - **CPU EER [↓2]**: TPS for each percent of a CPU the server spent on
+    average, `TPS / CPU Avg`.
+  - **MEM EER [↓3]**: TPS for each MB of memory the server held on average,
+    `TPS / MEM Avg`.
+  - **Min, Avg, Max, TP50, TP99, TP999**: the round trip of the successful
+    calls, from a log-linear histogram accurate to about 1.6%.
+  - **Used, Total, Success, Failed**: the measured time and the calls made.
+  - **Conns** and **Server Conns**: the connections asked for and the
+    established ones the server held, as the operating system counts them,
+    which shows whether the client really opened that many.
+  - **CPU Avg/Max**: the server's CPU, in percent of one CPU, over the whole
+    run and in its busiest second.
+  - **MEM Avg/Max**: the server's resident set.
+
+  Rows are ranked by TPS, a tie broken by CPU EER and that by MEM EER, the
+  columns marked [↓1], [↓2] and [↓3]; each of those cells carries its share of
+  the best in its column. `BENCH_REPORT_SORT=framework` orders the rows by name
+  instead.
+
+The console shows each run as it ends, one value a line - the table's and
+TP75, TP90, TP95, CPU Min, MEM Min and the client's own CPU and memory, which
+the JSON report carries too - and then the report, each table padded to line
+up, after a rule and its name in brackets. `output/report/report.md` has the
+same tables under Markdown headings.
 
 The server and the client run on separate CPUs (taskset, on Linux), and each
 server runs alone, started just before its turn and stopped right after.
@@ -57,14 +79,14 @@ Each framework runs its defaults, except where a fixed connection count or
 protobuf needs otherwise, and except for arpc, which runs as kitex-benchmark
 runs it:
 
-- `arpc` and `fib_arpc` handle every request asynchronously, off the
+- `arpc` and `arpc_fib` handle every request asynchronously, off the
   goroutine that read it (`SetAsyncResponse(true)`, and the Echo route
   registered with `async` true, which is both packages' default): arpc runs
   each one in a goroutine of its own, fib's arpc as a task on the engine's
   handler pool.
 - `arpc`: pooled message buffers (`EnablePool`), as kitex-benchmark runs it;
   one `arpc.Client` per connection.
-- `fib_arpc` and `fib_grpc`: fib's defaults; `fib_grpc` too answers every
+- `arpc_fib` and `grpc_fib`: fib's defaults; `grpc_fib` too answers every
   call on the engine's handler pool. The clients' connections share one fib
   engine.
 - `grpc`: one `grpc.ClientConn` per connection.
@@ -94,14 +116,15 @@ Go 1.27 or newer.
 bash script/benchmark.sh
 
 # Some of them, briefly, with client flags of your own
-BENCH_CONNS=100,1000 BENCH_FRAMEWORKS=arpc,fib_arpc BENCH_DURATION=10s \
+BENCH_CONNS=100,1000 BENCH_FRAMEWORKS=arpc,arpc_fib BENCH_DURATION=5s \
 bash script/benchmark.sh -b=4096
 ```
 
 [script/config.sh](script/config.sh) lists every `BENCH_*` setting:
 `BENCH_FRAMEWORKS`, `BENCH_CONNS`, `BENCH_CONCURRENCY`, `BENCH_PAYLOAD`,
 `BENCH_DURATION`, `BENCH_WARMUP`, `BENCH_SLEEP` (milliseconds the server holds
-every call, kitex-benchmark's `-sleep`), `BENCH_TIMEOUT`, and
+every call, kitex-benchmark's `-sleep`), `BENCH_TIMEOUT`, `BENCH_PROJECT` and
+`BENCH_REPORT_SORT` for the report, and
 `BENCH_SERVER_CPU_LIST`/`BENCH_CLIENT_CPU_LIST` for the CPUs each side is
 pinned to (by default, half each). Flags after the script go to every client,
 after its own, so they override them; `go run ./frameworks/arpc/client -h`
@@ -109,7 +132,8 @@ lists them.
 
 The report is written to `output/report/report.md`, from the clients' JSON
 reports beside it, and the servers' and clients' logs to `output/log`.
-`bash script/report.sh` writes the report again from the JSON.
+`bash script/report.sh` writes the report again from the JSON, and takes the
+report's flags: `bash script/report.sh -sort=framework`.
 
 10000 connections are 20000 open files, both ends being on one machine; the
 script raises the soft limit as far as the hard one allows, and says so if

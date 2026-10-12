@@ -7,36 +7,49 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-// Usage is what a process used while the calls were measured.
+// Usage is what a process used while the calls were measured, sampled every
+// interval: its CPU in percent of one CPU (250 is two and a half CPUs kept
+// busy), and its resident set in bytes.
+//
+// CPUMin and CPUMax are the least and most of any one interval. CPUAvg is the
+// CPU time of the whole run over its wall time, which is the mean of the
+// intervals without the error of their edges. MEMAvg is the mean of the
+// samples.
 type Usage struct {
-	// CPU is the CPU time it took over the wall time, in percent of one
-	// CPU: 250 is two and a half CPUs kept busy.
-	CPU float64
-	// RSSMax is the largest resident set seen, in bytes.
-	RSSMax uint64
+	CPUMin float64
+	CPUAvg float64
+	CPUMax float64
+	MEMMin uint64
+	MEMAvg uint64
+	MEMMax uint64
 }
 
-// sampler measures a process from start to stop: its CPU from its CPU time
-// at both ends, and its memory every interval in between.
+// sampler measures a process from start to finish.
 type sampler struct {
 	proc  *process.Process
 	begin time.Time
 	cpu0  float64
 	stop  chan struct{}
 	done  sync.WaitGroup
-	rss   uint64
+
+	// The last sample's time and CPU time, and the samples so far.
+	at     time.Time
+	cpu    float64
+	cpus   []float64
+	rss    []uint64
+	failed bool
 }
 
-func cpuTime(p *process.Process) float64 {
+func cpuTime(p *process.Process) (float64, bool) {
 	t, err := p.Times()
 	if err != nil {
-		return -1
+		return 0, false
 	}
-	return t.User + t.System
+	return t.User + t.System, true
 }
 
 // startSampler starts measuring pid, or returns nil when it cannot be read;
-// a nil sampler's stop reports nothing.
+// a nil sampler's finish reports nothing.
 func startSampler(pid int, interval time.Duration) *sampler {
 	if pid <= 0 {
 		return nil
@@ -45,10 +58,12 @@ func startSampler(pid int, interval time.Duration) *sampler {
 	if err != nil {
 		return nil
 	}
-	s := &sampler{proc: p, begin: time.Now(), cpu0: cpuTime(p), stop: make(chan struct{})}
-	if s.cpu0 < 0 {
+	cpu0, ok := cpuTime(p)
+	if !ok {
 		return nil
 	}
+	now := time.Now()
+	s := &sampler{proc: p, begin: now, cpu0: cpu0, at: now, cpu: cpu0, stop: make(chan struct{})}
 	s.sampleRSS()
 	s.done.Add(1)
 	go func() {
@@ -60,7 +75,7 @@ func startSampler(pid int, interval time.Duration) *sampler {
 			case <-s.stop:
 				return
 			case <-t.C:
-				s.sampleRSS()
+				s.sample(0)
 			}
 		}
 	}()
@@ -68,9 +83,25 @@ func startSampler(pid int, interval time.Duration) *sampler {
 }
 
 func (s *sampler) sampleRSS() {
-	if m, err := s.proc.MemoryInfo(); err == nil && m.RSS > s.rss {
-		s.rss = m.RSS
+	if m, err := s.proc.MemoryInfo(); err == nil {
+		s.rss = append(s.rss, m.RSS)
 	}
+}
+
+// sample records the CPU of the interval since the last sample, if it is at
+// least minInterval long, and the resident set.
+func (s *sampler) sample(minInterval time.Duration) {
+	now := time.Now()
+	cpu, ok := cpuTime(s.proc)
+	if !ok {
+		s.failed = true
+		return
+	}
+	if wall := now.Sub(s.at); wall > 0 && wall >= minInterval {
+		s.cpus = append(s.cpus, (cpu-s.cpu)/wall.Seconds()*100)
+		s.at, s.cpu = now, cpu
+	}
+	s.sampleRSS()
 }
 
 func (s *sampler) finish() Usage {
@@ -79,12 +110,36 @@ func (s *sampler) finish() Usage {
 	}
 	close(s.stop)
 	s.done.Wait()
-	s.sampleRSS()
-	u := Usage{RSSMax: s.rss}
-	if cpu1 := cpuTime(s.proc); cpu1 >= 0 {
+	// The last stretch, unless it is too short to say anything on its own.
+	s.sample(200 * time.Millisecond)
+
+	var u Usage
+	if cpu1, ok := cpuTime(s.proc); ok && !s.failed {
 		if wall := time.Since(s.begin).Seconds(); wall > 0 {
-			u.CPU = (cpu1 - s.cpu0) / wall * 100
+			u.CPUAvg = (cpu1 - s.cpu0) / wall * 100
 		}
+	}
+	u.CPUMin, u.CPUMax = u.CPUAvg, u.CPUAvg
+	for i, c := range s.cpus {
+		if i == 0 || c < u.CPUMin {
+			u.CPUMin = c
+		}
+		if i == 0 || c > u.CPUMax {
+			u.CPUMax = c
+		}
+	}
+	var sum uint64
+	for i, m := range s.rss {
+		sum += m
+		if i == 0 || m < u.MEMMin {
+			u.MEMMin = m
+		}
+		if m > u.MEMMax {
+			u.MEMMax = m
+		}
+	}
+	if len(s.rss) > 0 {
+		u.MEMAvg = sum / uint64(len(s.rss))
 	}
 	return u
 }

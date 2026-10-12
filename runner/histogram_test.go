@@ -43,11 +43,13 @@ func TestSummary(t *testing.T) {
 		}
 	}
 	near("avg", lat.Avg, 500500*time.Nanosecond)
-	near("p50", lat.P50, 500*time.Microsecond)
-	near("p90", lat.P90, 900*time.Microsecond)
-	near("p99", lat.P99, 990*time.Microsecond)
-	near("p999", lat.P999, 999*time.Microsecond)
-	if lat.Max != 1000*time.Microsecond {
-		t.Errorf("max = %v, want 1ms", lat.Max)
+	near("tp50", lat.TP50, 500*time.Microsecond)
+	near("tp75", lat.TP75, 750*time.Microsecond)
+	near("tp90", lat.TP90, 900*time.Microsecond)
+	near("tp95", lat.TP95, 950*time.Microsecond)
+	near("tp99", lat.TP99, 990*time.Microsecond)
+	near("tp999", lat.TP999, 999*time.Microsecond)
+	if lat.Min != time.Microsecond || lat.Max != 1000*time.Microsecond {
+		t.Errorf("min, max = %v, %v, want 1µs, 1ms", lat.Min, lat.Max)
 	}
 }

@@ -8,9 +8,9 @@
 # frameworks/<name>/client, built by script/build.sh.
 frameworks=(
     "arpc"
-    "fib_arpc"
-    "fib_grpc"
+    "arpc_fib"
     "grpc"
+    "grpc_fib"
     "kitex"
     "kitex_mux"
     "rpcx"
@@ -26,8 +26,8 @@ framework_port() {
         arpc) echo 20002 ;;
         rpcx) echo 20003 ;;
         grpc) echo 20004 ;;
-        fib_arpc) echo 20005 ;;
-        fib_grpc) echo 20006 ;;
+        arpc_fib) echo 20005 ;;
+        grpc_fib) echo 20006 ;;
         kitex_mux) echo 20007 ;;
         *) return 1 ;;
     esac
@@ -45,7 +45,7 @@ BENCH_CONCURRENCY=${BENCH_CONCURRENCY:-0}
 BENCH_PAYLOAD=${BENCH_PAYLOAD:-1024}
 # Measured time and the unmeasured warm-up before it, the client's -d and
 # -warmup.
-BENCH_DURATION=${BENCH_DURATION:-30s}
+BENCH_DURATION=${BENCH_DURATION:-10s}
 BENCH_WARMUP=${BENCH_WARMUP:-5s}
 # Milliseconds the server holds every call before it answers, the client's
 # -sleep; 0 answers at once.
@@ -56,8 +56,21 @@ BENCH_TIMEOUT=${BENCH_TIMEOUT:-5s}
 BENCH_SLEEP_BETWEEN=${BENCH_SLEEP_BETWEEN:-3}
 # Seconds a server has to start listening before it counts as failed.
 BENCH_SERVER_START_TIMEOUT=${BENCH_SERVER_START_TIMEOUT:-30}
-# The heading of the report; empty leaves it out.
+# The Summary's Project row: what the run benchmarks. ${VAR-default} rather
+# than ${VAR:-default}, so that an empty value is kept and leaves the row out.
 BENCH_PROJECT=${BENCH_PROJECT-GO-RPC-BENCHMARK}
+# The order the report's Echo tables put their rows in, which carries the same
+# rows and numbers either way:
+#   result     (default) best first: by TPS, a tie broken by CPU EER, and that
+#              by MEM EER - the columns marked [↓1], [↓2] and [↓3]
+#   framework  by framework name, which puts a framework on the same row in
+#              every table and every run
+# bash script/report.sh -sort=framework re-reads a finished run the other way.
+BENCH_REPORT_SORT=${BENCH_REPORT_SORT:-result}
+case "$BENCH_REPORT_SORT" in
+    result|framework) ;;
+    *) echo "Unsupported BENCH_REPORT_SORT: $BENCH_REPORT_SORT (want result or framework)" >&2; return 1 ;;
+esac
 
 for v in BENCH_CONCURRENCY BENCH_PAYLOAD BENCH_SLEEP BENCH_SLEEP_BETWEEN BENCH_SERVER_START_TIMEOUT; do
     case "${!v}" in

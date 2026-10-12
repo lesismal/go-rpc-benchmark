@@ -37,7 +37,7 @@ func (c *fibArpcClient) Close() error {
 
 func main() {
 	arpc.DefaultCodec = pbcodec.Codec{}
-	runner.Main("fib_arpc", func(opts runner.Options) (runner.Client, error) {
+	runner.Main("arpc_fib", func(opts runner.Options) (runner.Client, error) {
 		engine, err := fib.NewEngine(fib.DefaultConfig(), nil)
 		if err != nil {
 			return nil, err

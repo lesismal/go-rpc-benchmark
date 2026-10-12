@@ -29,11 +29,14 @@ func main() {
 	codec.DefaultCodec = pbcodec.Codec{}
 
 	svr := arpc.NewServer()
-	// As kitex-benchmark runs it: pooled message buffers, and every call
-	// answered off the connection's read goroutine (arpc's default).
+	// As kitex-benchmark runs it: pooled message buffers. Every request is
+	// handled asynchronously, off the connection's read goroutine: with no
+	// executor set, arpc runs each one in a goroutine of its own. That is
+	// arpc's default, set here for every route and for Echo itself, so that
+	// it does not hang on one.
 	svr.Handler.EnablePool(true)
 	svr.Handler.SetAsyncResponse(true)
-	svr.Handler.Handle("Echo", onEcho)
+	svr.Handler.Handle("Echo", onEcho, true)
 
 	go func() {
 		service.WaitSignal()

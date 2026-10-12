@@ -57,11 +57,16 @@ Each framework runs its defaults, except where a fixed connection count or
 protobuf needs otherwise, and except for arpc, which runs as kitex-benchmark
 runs it:
 
-- `arpc`: pooled message buffers (`EnablePool`), every call answered off the
-  connection's read goroutine (`SetAsyncResponse`, also arpc's default); one
-  `arpc.Client` per connection.
-- `fib_arpc` and `fib_grpc`: fib's defaults; calls are answered on the
-  engine's handler pool. The clients' connections share one fib engine.
+- `arpc` and `fib_arpc` handle every request asynchronously, off the
+  goroutine that read it (`SetAsyncResponse(true)`, and the Echo route
+  registered with `async` true, which is both packages' default): arpc runs
+  each one in a goroutine of its own, fib's arpc as a task on the engine's
+  handler pool.
+- `arpc`: pooled message buffers (`EnablePool`), as kitex-benchmark runs it;
+  one `arpc.Client` per connection.
+- `fib_arpc` and `fib_grpc`: fib's defaults; `fib_grpc` too answers every
+  call on the engine's handler pool. The clients' connections share one fib
+  engine.
 - `grpc`: one `grpc.ClientConn` per connection.
 - `kitex` and `kitex_mux` are kitex-benchmark's kitex and kitex-mux. A kitex
   client picks the connection of every call itself, so neither follows the

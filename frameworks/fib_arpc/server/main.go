@@ -29,8 +29,12 @@ func main() {
 	arpc.DefaultCodec = pbcodec.Codec{}
 
 	svr := arpc.NewServer()
-	// Every call answered on the engine's handler pool, fib's arpc default.
-	svr.Handler.Handle("Echo", onEcho)
+	// Every request is handled asynchronously, off the engine worker that
+	// read it: fib's arpc runs each one as a task on the engine's handler
+	// pool. That is its default, set here for every route and for Echo
+	// itself, so that it does not hang on one.
+	svr.Handler.SetAsyncResponse(true)
+	svr.Handler.Handle("Echo", onEcho, true)
 
 	config := fib.DefaultConfig()
 	config.Addr = addr

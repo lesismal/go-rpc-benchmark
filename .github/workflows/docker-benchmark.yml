@@ -5,10 +5,12 @@
 # documents. A push has no inputs, so every one of them falls back to the
 # default given in the job's env block.
 #
-# A run is five benchmarks, one job each, at 10, 100, 1000, 5000 and 10000
-# connections: every framework at that count, each client calling from the
-# larger of the connection count and 100 goroutines (BENCH_CONCURRENCY=0), so
-# 10 calls in flight per connection at 10 connections and one per connection
+# A run is one benchmark job per connection count, 2, 10, 100, 500 and 1000 by
+# default - CI's own set, the conns input, rather than script/config.sh's
+# BENCH_CONNS (10 to 10000), which local and Docker runs use. Each job runs
+# every framework at its count, each client calling from the larger of the
+# connection count and 100 goroutines (BENCH_CONCURRENCY=0): 50 calls in
+# flight per connection at 2 connections, 10 at 10, and one per connection
 # from 100 up. Smoke runs every framework briefly at 10 connections only.
 #
 # The benchmark asks for 8 CPUs (4 for the servers, 4 for the clients), which
@@ -31,6 +33,10 @@ on:
         type: choice
         options: [smoke, full]
         default: smoke
+      conns:
+        description: "Comma-separated connection counts, one job each (ignored by smoke, which runs 10)"
+        type: string
+        default: "2,10,100,500,1000"
       frameworks:
         description: "Comma-separated framework subset, e.g. arpc,arpc_fib (empty = all)"
         type: string
@@ -80,12 +86,12 @@ jobs:
     timeout-minutes: 120
 
     # One job per connection count, one after another, each on a runner of
-    # its own.
+    # its own. A push has no inputs and runs the default set.
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        conns: ${{ fromJSON((inputs.mode || 'full') == 'smoke' && '[10]' || '[10, 100, 1000, 5000, 10000]') }}
+        conns: ${{ fromJSON((inputs.mode || 'full') == 'smoke' && '[10]' || format('[{0}]', inputs.conns || '2,10,100,500,1000')) }}
 
     # The inputs with a push's defaults filled in; a dispatch passes its own.
     # BENCH_CPUS is what was asked for; the runner check sets BENCH_RUN_CPUS

@@ -261,15 +261,15 @@ func tpsTable(groups []group, byGroup map[group][]runner.Result, payload, sleep 
 	return markdownTable(title, rows)
 }
 
-// echoTable is one load's runs, in the order given. Its columns are
-// go-websocket-benchmark's BenchEcho's: the JSON reports and each run's
-// console output carry the rest (TP75, TP90, TP95, CPU Min, MEM Min and the
-// client's own CPU and memory).
+// echoTable is one load's runs, in the order given. The JSON reports and each
+// run's console output carry what it leaves out: TP50 to TP95, the measured
+// time, the connections the server held, CPU Min, MEM Min and the client's
+// own CPU and memory.
 func echoTable(rs []runner.Result) string {
 	title := []string{
 		"Framework", "TPS" + rankMarker(1), "CPU EER" + rankMarker(2), "MEM EER" + rankMarker(3),
-		"Min", "Avg", "Max", "TP50", "TP99", "TP999",
-		"Used", "Total", "Success", "Failed", "Conns", "Server Conns",
+		"Min", "Avg", "Max", "TP99", "TP999",
+		"Total", "Success", "Failed",
 		"CPU Avg", "CPU Max", "MEM Avg", "MEM Max",
 	}
 	rows := make([][]string, len(rs))
@@ -282,18 +282,12 @@ func echoTable(rs []runner.Result) string {
 		if r.ConnFailed > 0 {
 			failed = fmt.Sprintf("%d conns", r.ConnFailed)
 		}
-		serverConns := "-"
-		if r.ServerConns >= 0 {
-			serverConns = strconv.Itoa(r.ServerConns)
-		}
 		rows[i] = []string{
 			r.Framework,
 			fmt.Sprintf("%.0f", r.TPS), fmt.Sprintf("%.2f", r.CPUEER), fmt.Sprintf("%.2f", r.MEMEER),
 			runner.FormatDuration(r.Min), runner.FormatDuration(r.Avg), runner.FormatDuration(r.Max),
-			runner.FormatDuration(r.TP50), runner.FormatDuration(r.TP99), runner.FormatDuration(r.TP999),
-			runner.FormatSeconds(r.Used),
+			runner.FormatDuration(r.TP99), runner.FormatDuration(r.TP999),
 			strconv.FormatUint(r.Total, 10), strconv.FormatUint(r.Success, 10), failed,
-			strconv.Itoa(r.Conns), serverConns,
 			runner.FormatCPU(r.Server.CPUAvg), runner.FormatCPU(r.Server.CPUMax),
 			runner.FormatMem(r.Server.MEMAvg), runner.FormatMem(r.Server.MEMMax),
 		}

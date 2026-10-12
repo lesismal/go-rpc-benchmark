@@ -49,12 +49,9 @@ format:
     average, `TPS / CPU Avg`.
   - **MEM EER [↓3]**: TPS for each MB of memory the server held on average,
     `TPS / MEM Avg`.
-  - **Min, Avg, Max, TP50, TP99, TP999**: the round trip of the successful
-    calls, from a log-linear histogram accurate to about 1.6%.
-  - **Used, Total, Success, Failed**: the measured time and the calls made.
-  - **Conns** and **Server Conns**: the connections asked for and the
-    established ones the server held, as the operating system counts them,
-    which shows whether the client really opened that many.
+  - **Min, Avg, Max, TP99, TP999**: the round trip of the successful calls,
+    from a log-linear histogram accurate to about 1.6%.
+  - **Total, Success, Failed**: the calls made.
   - **CPU Avg/Max**: the server's CPU, in percent of one CPU, over the whole
     run and in its busiest second.
   - **MEM Avg/Max**: the server's resident set.
@@ -65,9 +62,12 @@ format:
   instead.
 
 The console shows each run as it ends, one value a line - the table's and
-TP75, TP90, TP95, CPU Min, MEM Min and the client's own CPU and memory, which
-the JSON report carries too - and then the report, each table padded to line
-up, after a rule and its name in brackets. `output/report/report.md` has the
+TP50 to TP95, the measured time, CPU Min, MEM Min, the client's own CPU and
+memory, and **Server Conns**: the established connections the server held, as
+the operating system counts them, which shows whether the client really
+opened as many as it was asked to. The JSON report carries them too. Then
+comes the report, each table padded to line up, after a rule and its name in
+brackets. `output/report/report.md` has the
 same tables under Markdown headings.
 
 The server and the client run on separate CPUs (taskset, on Linux), and each
@@ -97,7 +97,7 @@ runs it:
     call at a time: the client's long connection pool
     (`client.WithLongConnection`) holds one connection per call in flight,
     which is the concurrency rather than `-conns` - 100 connections at 10, as
-    the Server Conns column shows. The pool keeps that many idle, so none is
+    its run's Server Conns shows. The pool keeps that many idle, so none is
     closed and dialed again between two calls.
   - `kitex_mux` multiplexes calls over exactly `-conns` connections
     (`client.WithMuxConnection(conns)` with `server.WithMuxTransport()`),
@@ -166,8 +166,9 @@ modules).
 ### CI
 
 [.github/workflows/docker-benchmark.yml](.github/workflows/docker-benchmark.yml)
-runs the Docker benchmark on every push to main, one job per connection count
-(10, 100, 1000, 5000 and 10000), one after another, and writes each job's
+runs the Docker benchmark on every push to main, one job per connection count,
+one after another - CI's own set, 2, 10, 100, 500 and 1000 (its `conns`
+input), rather than `BENCH_CONNS`'s 10 to 10000 - and writes each job's
 report to its summary and its results to an artifact. It can also be started
 from the Actions tab, as a smoke run or a full one, for some of the frameworks
 or with other settings. It asks for 8 CPUs: set the repository variable

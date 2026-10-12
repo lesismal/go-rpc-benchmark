@@ -1,0 +1,6 @@
+.idea/
+.vscode/
+output/
+
+# go test -c output
+*.test

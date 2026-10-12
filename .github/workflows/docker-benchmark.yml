@@ -1,0 +1,209 @@
+# Runs script/docker_benchmark.sh on an x86_64 runner.
+#
+# Runs the full matrix on every push to main, and can also be started by hand
+# from the Actions tab with the inputs below - the same knobs script/config.sh
+# documents. A push has no inputs, so every one of them falls back to the
+# default given in the job's env block.
+#
+# A run is five benchmarks, one job each, at 10, 100, 1000, 5000 and 10000
+# connections: every framework at that count, each client calling from the
+# larger of the connection count and 100 goroutines (BENCH_CONCURRENCY=0), so
+# 10 calls in flight per connection at 10 connections and one per connection
+# from 100 up. Smoke runs every framework briefly at 10 connections only.
+#
+# The benchmark asks for 8 CPUs (4 for the servers, 4 for the clients), which
+# the standard GitHub-hosted runner (a shared 4-CPU VM) does not have. Point
+# the repository variable DOCKER_BENCH_RUNNER (Settings > Secrets and
+# variables > Actions > Variables) at the label of a runner with at least 8
+# CPUs - a larger GitHub-hosted runner or a self-hosted one. Until it is set,
+# the job runs on ubuntu-24.04 and falls back to every CPU that runner has:
+# the run still passes, but its numbers are for 4 CPUs rather than 8, which
+# the job summary and resources.txt say.
+name: Docker benchmark
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke: every framework briefly at 10 connections. full: one job per connection count"
+        type: choice
+        options: [smoke, full]
+        default: smoke
+      frameworks:
+        description: "Comma-separated framework subset, e.g. arpc,fib_arpc (empty = all)"
+        type: string
+        default: ""
+      cpus:
+        description: "DOCKER_BENCH_CPUS, an integer; a runner with fewer runs on all of its own"
+        type: string
+        default: "8"
+      memory:
+        description: "DOCKER_BENCH_MEMORY, e.g. 12g (empty = 80% of what Docker exposes)"
+        type: string
+        default: ""
+      payload:
+        description: "BENCH_PAYLOAD, bytes every call echoes"
+        type: string
+        default: "1024"
+      duration:
+        description: "BENCH_DURATION, measured time of every framework (ignored by smoke)"
+        type: string
+        default: "30s"
+      concurrency:
+        description: "BENCH_CONCURRENCY, goroutines calling at once (0 = the larger of the connections and 100)"
+        type: string
+        default: "0"
+      benchmark_args:
+        description: "Extra client flags, e.g. -sleep=1 -timeout=10s; given to every client after its own"
+        type: string
+        default: ""
+      rebuild:
+        description: "Rebuild the image without Docker's layer cache"
+        type: boolean
+        default: false
+
+# One benchmark at a time: two of them on the same runner pool measure each
+# other rather than the frameworks (which is also why the jobs below run one
+# after another). A run already going is left to finish; of the ones waiting
+# behind it, GitHub keeps only the newest.
+concurrency:
+  group: docker-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    # x86_64. ubuntu-latest may move to arm64 runners; this label does not.
+    runs-on: ${{ vars.DOCKER_BENCH_RUNNER || 'ubuntu-24.04' }}
+    name: benchmark (${{ matrix.conns }} conns)
+    timeout-minutes: 120
+
+    # One job per connection count, one after another, each on a runner of
+    # its own.
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        conns: ${{ fromJSON((inputs.mode || 'full') == 'smoke' && '[10]' || '[10, 100, 1000, 5000, 10000]') }}
+
+    # The inputs with a push's defaults filled in; a dispatch passes its own.
+    # BENCH_CPUS is what was asked for; the runner check sets BENCH_RUN_CPUS
+    # to what the run actually gets.
+    env:
+      BENCH_MODE: ${{ inputs.mode || 'full' }}
+      BENCH_CPUS: ${{ inputs.cpus || '8' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the runner
+        run: |
+          arch=$(uname -m)
+          echo "runner architecture: $arch"
+          if [ "$arch" != "x86_64" ]; then
+            echo "this workflow measures x86_64; got $arch" >&2
+            exit 1
+          fi
+          cpus=$(nproc)
+          echo "runner CPUs: $cpus, benchmark wants: $BENCH_CPUS"
+          if ! [[ "$BENCH_CPUS" =~ ^[0-9]+$ ]]; then
+            echo "cpus must be an integer; got $BENCH_CPUS" >&2
+            exit 1
+          fi
+          run_cpus=$BENCH_CPUS
+          if [ "$cpus" -lt "$BENCH_CPUS" ]; then
+            run_cpus=$cpus
+            echo "::warning title=Benchmark ran on $cpus of the $BENCH_CPUS CPUs asked for::this runner has $cpus CPUs, so the results are for $cpus, not the $BENCH_CPUS asked for; set the repository variable DOCKER_BENCH_RUNNER to a runner with at least $BENCH_CPUS"
+          fi
+          echo "BENCH_RUN_CPUS=$run_cpus" >> "$GITHUB_ENV"
+          free -h
+          df -h /
+          docker version
+
+      - name: Run script/docker_benchmark.sh
+        env:
+          # Read through env rather than interpolated into the script body, so
+          # an input cannot become shell of its own.
+          INPUT_MODE: ${{ env.BENCH_MODE }}
+          INPUT_FRAMEWORKS: ${{ inputs.frameworks }}
+          INPUT_CPUS: ${{ env.BENCH_RUN_CPUS }}
+          INPUT_MEMORY: ${{ inputs.memory }}
+          INPUT_PAYLOAD: ${{ inputs.payload || '1024' }}
+          INPUT_DURATION: ${{ inputs.duration || '30s' }}
+          INPUT_CONCURRENCY: ${{ inputs.concurrency || '0' }}
+          INPUT_BENCHMARK_ARGS: ${{ inputs.benchmark_args }}
+          INPUT_REBUILD: ${{ inputs.rebuild || false }}
+          # A fixed directory instead of the script's timestamped one, so the
+          # upload and summary steps below know where the run landed.
+          DOCKER_BENCH_OUTPUT: ${{ github.workspace }}/output/docker/ci-c${{ matrix.conns }}
+          MATRIX_CONNS: ${{ matrix.conns }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$INPUT_FRAMEWORKS" ]; then export BENCH_FRAMEWORKS="$INPUT_FRAMEWORKS"; fi
+          if [ -n "$INPUT_CPUS" ]; then export DOCKER_BENCH_CPUS="$INPUT_CPUS"; fi
+          if [ -n "$INPUT_MEMORY" ]; then export DOCKER_BENCH_MEMORY="$INPUT_MEMORY"; fi
+          export BENCH_PAYLOAD="$INPUT_PAYLOAD"
+          export BENCH_CONCURRENCY="$INPUT_CONCURRENCY"
+
+          bench_command=(bash script/docker_benchmark.sh)
+          if [ "$INPUT_MODE" = smoke ]; then
+            bench_command+=(--smoke)
+          else
+            export BENCH_DURATION="$INPUT_DURATION"
+          fi
+          if [ "$INPUT_REBUILD" = true ]; then bench_command+=(--rebuild); fi
+          # After --smoke, whose BENCH_CONNS=10 this job's count replaces.
+          export BENCH_CONNS="$MATRIX_CONNS"
+          # Split on purpose: this input carries several client flags.
+          if [ -n "$INPUT_BENCHMARK_ARGS" ]; then
+            read -r -a extra_args <<< "$INPUT_BENCHMARK_ARGS"
+            bench_command+=("${extra_args[@]}")
+          fi
+
+          echo "running: BENCH_CONNS=$BENCH_CONNS ${bench_command[*]}"
+          "${bench_command[@]}"
+
+      - name: Write the report to the job summary
+        if: always()
+        run: |
+          result_dir=output/docker/ci-c${{ matrix.conns }}
+          run_cpus=${BENCH_RUN_CPUS:-$BENCH_CPUS}
+          if [ "$run_cpus" = "$BENCH_CPUS" ]; then
+            cpu_note="CPUs: $run_cpus"
+          else
+            cpu_note="CPUs: $run_cpus (asked for $BENCH_CPUS; this runner has only $run_cpus, so these are not $BENCH_CPUS-CPU numbers)"
+          fi
+          if [ -f "$result_dir/resources.txt" ]; then
+            echo "Benchmark $cpu_note" >> "$result_dir/resources.txt"
+          fi
+          {
+            echo "# ${{ matrix.conns }} connections"
+            echo
+            echo "**$cpu_note**"
+            echo
+            if [ -f "$result_dir/resources.txt" ]; then
+              echo "## Run"
+              echo
+              echo '```'
+              cat "$result_dir/resources.txt"
+              echo '```'
+              echo
+            fi
+            if [ -f "$result_dir/report/report.md" ]; then
+              # The report's own "# GO-RPC-BENCHMARK" heading is this one's.
+              sed '1{/^# /d}' "$result_dir/report/report.md"
+            else
+              echo "No report was produced; see the console log in the artifact."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-benchmark-${{ env.BENCH_MODE }}-c${{ matrix.conns }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: output/docker/ci-c${{ matrix.conns }}
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package echo;
+
+option go_package = "go-rpc-benchmark/pb/echo";
+
+// The same messages kitex-benchmark echoes: Action says what the server does
+// with the call, and Msg is the payload it sends back.
+message Request {
+  string Action = 1;
+  string Msg = 2;
+}
+
+message Response {
+  string Action = 1;
+  string Msg = 2;
+}
+
+service Echo {
+  rpc Echo (Request) returns (Response) {}
+}
